@@ -2,8 +2,8 @@ import json
 import time
 from collections import defaultdict
 from kafka import KafkaConsumer
-from kafka.errors import KafkaError
 import logging
+import psycopg2
 
 # Configure logging
 logging.basicConfig(
@@ -12,8 +12,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class SimpleKafkaConsumer:
-    def __init__(self, bootstrap_servers=['localhost:9092'], topic='user-events', group_id='user-events-group'):
+
+class FinancialTransactionConsumer:
+    def __init__(
+        self,
+        bootstrap_servers=['localhost:9092'],
+        topic='financial-transactions',
+        group_id='financial-analytics-group'
+    ):
         self.topic = topic
         self.group_id = group_id
         self.consumer = KafkaConsumer(
@@ -22,128 +28,171 @@ class SimpleKafkaConsumer:
             group_id=group_id,
             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
             key_deserializer=lambda k: k.decode('utf-8') if k else None,
-            auto_offset_reset='earliest',  # Start from beginning if no offset
+            auto_offset_reset='earliest',
             enable_auto_commit=True,
             auto_commit_interval_ms=1000,
             session_timeout_ms=30000,
-            heartbeat_interval_ms=10000
+            heartbeat_interval_ms=10000,
+            security_protocol='PLAINTEXT'  # Use SSL/SASL in prod
         )
-        
-        # Analytics storage
-        self.event_counts = defaultdict(int)
-        self.user_activity = defaultdict(list)
+        self.txn_counts = defaultdict(int)
+        self.account_activity = defaultdict(list)
+        self.total_amount = defaultdict(float)
         self.total_messages = 0
-        
-        logger.info(f"Consumer initialized for topic: {topic}, group: {group_id}")
+        logger.info(
+            f"Consumer initialized for topic: {topic}, group: {group_id}"
+        )
+        self.db_conn = psycopg2.connect(
+            dbname="kafka_financial",
+            user="kafkauser",
+            password="kafkapass",
+            host="localhost",
+            port=5432
+        )
+        self.ensure_table()
+
+    def ensure_table(self):
+        with self.db_conn.cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS financial_transactions (
+                    transaction_id VARCHAR PRIMARY KEY,
+                    account_id VARCHAR,
+                    type VARCHAR,
+                    amount NUMERIC,
+                    currency VARCHAR,
+                    timestamp TIMESTAMP,
+                    status VARCHAR,
+                    instrument VARCHAR,
+                    ip_address VARCHAR
+                )
+            ''')
+            self.db_conn.commit()
+
+    def write_transaction(self, txn):
+        with self.db_conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO financial_transactions (
+                    transaction_id,
+                    account_id,
+                    type,
+                    amount,
+                    currency,
+                    timestamp,
+                    status,
+                    instrument,
+                    ip_address
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (transaction_id) DO NOTHING
+                """,
+                (
+                    txn.get('transaction_id'),
+                    txn.get('account_id'),
+                    txn.get('type'),
+                    txn.get('amount'),
+                    txn.get('currency'),
+                    txn.get('timestamp'),
+                    txn.get('status'),
+                    (txn.get('metadata') or {}).get('instrument'),
+                    (txn.get('metadata') or {}).get('ip_address')
+                )
+            )
+            self.db_conn.commit()
 
     def process_message(self, message):
-        """Process individual user event message"""
+        """Process individual financial transaction"""
         try:
-            event = message.value
-            user_id = event.get('user_id')
-            event_type = event.get('event_type')
-            timestamp = event.get('timestamp')
-            
-            # Update analytics
-            self.event_counts[event_type] += 1
-            self.user_activity[user_id].append({
-                'event': event_type,
+            txn = message.value
+            account_id = txn.get('account_id')
+            txn_type = txn.get('type')
+            amount = float(txn.get('amount', 0))
+            currency = txn.get('currency')
+            timestamp = txn.get('timestamp')
+            self.txn_counts[txn_type] += 1
+            self.account_activity[account_id].append({
+                'type': txn_type,
+                'amount': amount,
+                'currency': currency,
                 'timestamp': timestamp
             })
+            self.total_amount[currency] += amount
             self.total_messages += 1
-            
-            logger.info(f"[Message {self.total_messages}] Processed: {event_type} from {user_id}")
-            
-            # Simulate processing time
-            time.sleep(0.1)
-            
+            logger.info(
+                f"[Message {self.total_messages}] {txn_type} {amount} "
+                f"{currency} for {account_id}"
+            )
+            self.write_transaction(txn)
+            time.sleep(0.05)
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error processing transaction: {e}")
 
-    def consume_events(self, max_messages=None, timeout_seconds=60):
-        """Consume user events"""
+    def consume_transactions(self, max_messages=None, timeout_seconds=60):
         start_time = time.time()
-        
         try:
-            logger.info(f"Starting to consume from topic '{self.topic}'...")
-            logger.info(f"Max messages: {max_messages or 'Unlimited'}")
-            logger.info(f"Timeout: {timeout_seconds} seconds")
-            
+            logger.info(f"Consuming from topic '{self.topic}'...")
             for message in self.consumer:
                 self.process_message(message)
-                
-                # Check if we've reached the maximum message limit
                 if max_messages and self.total_messages >= max_messages:
-                    logger.info(f"Reached maximum message limit: {max_messages}")
+                    logger.info(
+                        f"Reached max message limit: {max_messages}"
+                    )
                     break
-                
-                # Check for timeout
-                elapsed_time = time.time() - start_time
-                if elapsed_time >= timeout_seconds:
-                    logger.info(f"Timeout reached: {timeout_seconds} seconds")
+                if time.time() - start_time >= timeout_seconds:
+                    logger.info(
+                        f"Timeout reached: {timeout_seconds} seconds"
+                    )
                     break
-                    
         except KeyboardInterrupt:
             logger.info("Consumer interrupted by user")
         except Exception as e:
-            logger.error(f"Error consuming messages: {e}")
+            logger.error(f"Error consuming transactions: {e}")
         finally:
             self.close()
 
     def print_analytics(self):
-        """Print analytics summary"""
         print("\n" + "="*50)
-        print("USER EVENT ANALYTICS")
+        print("FINANCIAL TRANSACTION ANALYTICS")
         print("="*50)
-        
-        print(f"\nTotal Messages Processed: {self.total_messages}")
-        
-        if self.event_counts:
-            print("\nEvent Type Distribution:")
-            for event_type, count in sorted(self.event_counts.items()):
-                percentage = (count / self.total_messages) * 100 if self.total_messages > 0 else 0
-                print(f"  {event_type}: {count} ({percentage:.1f}%)")
-        
-        print(f"\nTotal Unique Users: {len(self.user_activity)}")
-        
-        # Top active users
-        if self.user_activity:
-            user_event_counts = {user: len(events) for user, events in self.user_activity.items()}
-            top_users = sorted(user_event_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-            
-            print("\nTop 5 Most Active Users:")
-            for user, count in top_users:
-                print(f"  {user}: {count} events")
-        
+        print(f"\nTotal Transactions Processed: {self.total_messages}")
+        if self.txn_counts:
+            print("\nTransaction Type Distribution:")
+            for txn_type, count in sorted(self.txn_counts.items()):
+                pct = (
+                    (count / self.total_messages) * 100
+                    if self.total_messages > 0 else 0
+                )
+                print(f"  {txn_type}: {count} ({pct:.1f}%)")
+        print("\nTotal Amounts by Currency:")
+        for currency, total in self.total_amount.items():
+            print(f"  {currency}: {total:.2f}")
+        print(f"\nTotal Unique Accounts: {len(self.account_activity)}")
+        if self.account_activity:
+            acct_counts = {
+                acct: len(events)
+                for acct, events in self.account_activity.items()
+            }
+            top_accounts = sorted(
+                acct_counts.items(), key=lambda x: x[1], reverse=True
+            )[:5]
+            print("\nTop 5 Most Active Accounts:")
+            for acct, count in top_accounts:
+                print(f"  {acct}: {count} transactions")
         print("="*50)
 
     def close(self):
-        """Close the consumer"""
         self.consumer.close()
+        self.db_conn.close()
         self.print_analytics()
         logger.info("Consumer closed")
 
+
 def main():
-    """Main function to run the consumer"""
-    print("Simple Kafka Consumer")
-    print("=" * 30)
-    
-    # Get user input for configuration
-    try:
-        max_messages = input("Enter max messages to consume (default: unlimited): ").strip()
-        max_messages = int(max_messages) if max_messages else None
-        
-        timeout = input("Enter timeout in seconds (default: 60): ").strip()
-        timeout = int(timeout) if timeout else 60
-        
-    except ValueError:
-        print("Using default values...")
-        max_messages = None
-        timeout = 60
-    
-    # Create and run consumer
-    consumer = SimpleKafkaConsumer()
-    consumer.consume_events(max_messages=max_messages, timeout_seconds=timeout)
+    print("Financial Transaction Kafka Consumer")
+    print("=" * 40)
+    consumer = FinancialTransactionConsumer()
+    # Continuously consume messages with no max limit and no timeout
+    consumer.consume_transactions(max_messages=None, timeout_seconds=99999999)
+
 
 if __name__ == "__main__":
     main()

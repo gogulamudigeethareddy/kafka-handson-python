@@ -13,70 +13,87 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class SimpleKafkaProducer:
-    def __init__(self, bootstrap_servers=['localhost:9092'], topic='user-events'):
+
+class FinancialTransactionProducer:
+    def __init__(
+        self,
+        bootstrap_servers=['localhost:9092'],
+        topic='financial-transactions'
+    ):
         self.topic = topic
         self.producer = KafkaProducer(
             bootstrap_servers=bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v, default=str).encode('utf-8'),
+            value_serializer=lambda v: json.dumps(v, default=str)
+            .encode('utf-8'),
             key_serializer=lambda k: k.encode('utf-8') if k else None,
-            acks='all',  # Wait for all replicas to acknowledge
-            retries=3,
-            retry_backoff_ms=1000,
-            max_in_flight_requests_per_connection=1,
+            acks='all',
+            retries=5,
+            retry_backoff_ms=2000,
+            max_in_flight_requests_per_connection=1,  # Set to 1 for idempotence
             enable_idempotence=True,
-            compression_type='gzip'
+            compression_type='gzip',
+            linger_ms=10,
+            security_protocol='PLAINTEXT'  # Use SSL/SASL in prod
         )
         logger.info(f"Producer initialized for topic: {self.topic}")
 
-    def generate_user_event(self, user_id):
-        """Generate a sample user event"""
-        events = ['login', 'logout', 'purchase', 'view_product', 'add_to_cart', 'search']
+    def generate_transaction(self, account_id):
+        """Generate a sample financial transaction"""
+        transaction_types = ['deposit', 'withdrawal', 'trade', 'transfer']
+        txn_type = random.choice(transaction_types)
+        amount = round(random.uniform(10, 10000), 2)
+        currency = random.choice(['USD', 'EUR', 'JPY', 'GBP'])
+        instrument = None
+        if txn_type == 'trade':
+            instrument = random.choice(['AAPL', 'GOOG', 'TSLA', 'BTC', 'ETH'])
         return {
-            'user_id': user_id,
-            'event_type': random.choice(events),
-            'timestamp': datetime.now().isoformat(),
-            'session_id': f"session_{random.randint(1000, 9999)}",
+            'transaction_id': f"txn_{random.randint(100000, 999999)}",
+            'account_id': account_id,
+            'type': txn_type,
+            'amount': amount,
+            'currency': currency,
+            'timestamp': datetime.utcnow().isoformat(),
+            'status': 'completed',
             'metadata': {
-                'ip_address': f"192.168.1.{random.randint(1, 255)}",
-                'user_agent': 'Mozilla/5.0 (compatible; KafkaBot/1.0)',
-                'product_id': random.randint(100, 999) if random.choice([True, False]) else None
+                'instrument': instrument,
+                'ip_address': f"10.0.0.{random.randint(1, 255)}"
             }
         }
 
-    def produce_events(self, num_events=50, delay=1):
-        """Produce multiple events"""
+    def produce_transactions(self, num_events=50, delay=0.5):
+        """Produce multiple financial transactions"""
         try:
-            logger.info(f"Starting to produce {num_events} events to topic '{self.topic}'")
-            
+            logger.info(
+                f"Producing {num_events} transactions to topic '{self.topic}'"
+            )
             for i in range(num_events):
-                user_id = f"user_{random.randint(1, 20)}"
-                event = self.generate_user_event(user_id)
-                
-                # Send message with key for partitioning
+                account_id = f"acct_{random.randint(1000, 1020)}"
+                txn = self.generate_transaction(account_id)
                 future = self.producer.send(
                     self.topic,
-                    key=user_id,
-                    value=event
+                    key=account_id,
+                    value=txn
                 )
-                
-                # Add callback for success/error handling
                 future.add_callback(self.on_send_success)
                 future.add_errback(self.on_send_error)
-                
-                logger.info(f"Sent event {i+1}/{num_events}: {event['event_type']} for {user_id}")
+                logger.info(
+                    f"Sent transaction {i+1}/{num_events}: {txn['type']} "
+                    f"for {account_id}"
+                )
                 time.sleep(delay)
-                
         except KeyboardInterrupt:
             logger.info("Producer interrupted by user")
         except Exception as e:
-            logger.error(f"Error producing events: {e}")
+            logger.error(f"Error producing transactions: {e}")
         finally:
             self.close()
 
     def on_send_success(self, record_metadata):
         """Callback for successful message delivery"""
-        logger.debug(f"Message delivered to {record_metadata.topic} partition {record_metadata.partition} offset {record_metadata.offset}")
+        logger.debug(
+            f"Message delivered to {record_metadata.topic} partition "
+            f"{record_metadata.partition} offset {record_metadata.offset}"
+        )
 
     def on_send_error(self, excp):
         """Callback for message delivery errors"""
@@ -88,23 +105,16 @@ class SimpleKafkaProducer:
         self.producer.close()
         logger.info("Producer closed")
 
+
 def main():
     """Main function to run the producer"""
-    print("Simple Kafka Producer")
-    print("=" * 30)
-    
-    # Get user input for configuration
-    try:
-        num_events = int(input("Enter number of events to produce (default 20): ") or "20")
-        delay = float(input("Enter delay between events in seconds (default 1): ") or "1")
-    except ValueError:
-        print("Using default values...")
-        num_events = 20
-        delay = 1
-    
-    # Create and run producer
-    producer = SimpleKafkaProducer()
-    producer.produce_events(num_events=num_events, delay=delay)
+    print("Financial Transaction Kafka Producer")
+    print("=" * 40)
+    # Produce 1000 transactions with 0.1s delay, no user input
+    producer = FinancialTransactionProducer()
+    while True:
+        producer.produce_transactions(num_events=1000, delay=0.1)
+
 
 if __name__ == "__main__":
     main()

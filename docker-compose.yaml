@@ -95,6 +95,19 @@ services:
     networks:
       - kafka-network
 
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: kafkauser
+      POSTGRES_PASSWORD: kafkapass
+      POSTGRES_DB: kafka_financial
+    ports:
+      - "5432:5432"
+    networks:
+      - kafka-network
+
 networks:
   kafka-network:
     driver: bridge
