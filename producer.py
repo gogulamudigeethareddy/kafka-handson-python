@@ -110,23 +110,10 @@ def main():
     """Main function to run the producer"""
     print("Financial Transaction Kafka Producer")
     print("=" * 40)
-    try:
-        num_events = int(
-            input(
-                "Enter number of transactions to produce (default 20): "
-            ) or "20"
-        )
-        delay = float(
-            input(
-                "Enter delay between transactions in seconds (default 0.5): "
-            ) or "0.5"
-        )
-    except ValueError:
-        print("Using default values...")
-        num_events = 20
-        delay = 0.5
+    # Produce 1000 transactions with 0.1s delay, no user input
     producer = FinancialTransactionProducer()
-    producer.produce_transactions(num_events=num_events, delay=delay)
+    while True:
+        producer.produce_transactions(num_events=1000, delay=0.1)
 
 
 if __name__ == "__main__":

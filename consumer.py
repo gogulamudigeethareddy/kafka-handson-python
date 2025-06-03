@@ -3,6 +3,7 @@ import time
 from collections import defaultdict
 from kafka import KafkaConsumer
 import logging
+import psycopg2
 
 # Configure logging
 logging.basicConfig(
@@ -13,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 class FinancialTransactionConsumer:
-    def __init__(self, bootstrap_servers=['localhost:9092'], topic='financial-transactions', group_id='financial-analytics-group'):
+    def __init__(
+        self,
+        bootstrap_servers=['localhost:9092'],
+        topic='financial-transactions',
+        group_id='financial-analytics-group'
+    ):
         self.topic = topic
         self.group_id = group_id
         self.consumer = KafkaConsumer(
@@ -36,6 +42,62 @@ class FinancialTransactionConsumer:
         logger.info(
             f"Consumer initialized for topic: {topic}, group: {group_id}"
         )
+        self.db_conn = psycopg2.connect(
+            dbname="kafka_financial",
+            user="kafkauser",
+            password="kafkapass",
+            host="localhost",
+            port=5432
+        )
+        self.ensure_table()
+
+    def ensure_table(self):
+        with self.db_conn.cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS financial_transactions (
+                    transaction_id VARCHAR PRIMARY KEY,
+                    account_id VARCHAR,
+                    type VARCHAR,
+                    amount NUMERIC,
+                    currency VARCHAR,
+                    timestamp TIMESTAMP,
+                    status VARCHAR,
+                    instrument VARCHAR,
+                    ip_address VARCHAR
+                )
+            ''')
+            self.db_conn.commit()
+
+    def write_transaction(self, txn):
+        with self.db_conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO financial_transactions (
+                    transaction_id,
+                    account_id,
+                    type,
+                    amount,
+                    currency,
+                    timestamp,
+                    status,
+                    instrument,
+                    ip_address
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (transaction_id) DO NOTHING
+                """,
+                (
+                    txn.get('transaction_id'),
+                    txn.get('account_id'),
+                    txn.get('type'),
+                    txn.get('amount'),
+                    txn.get('currency'),
+                    txn.get('timestamp'),
+                    txn.get('status'),
+                    (txn.get('metadata') or {}).get('instrument'),
+                    (txn.get('metadata') or {}).get('ip_address')
+                )
+            )
+            self.db_conn.commit()
 
     def process_message(self, message):
         """Process individual financial transaction"""
@@ -59,6 +121,7 @@ class FinancialTransactionConsumer:
                 f"[Message {self.total_messages}] {txn_type} {amount} "
                 f"{currency} for {account_id}"
             )
+            self.write_transaction(txn)
             time.sleep(0.05)
         except Exception as e:
             logger.error(f"Error processing transaction: {e}")
@@ -118,6 +181,7 @@ class FinancialTransactionConsumer:
 
     def close(self):
         self.consumer.close()
+        self.db_conn.close()
         self.print_analytics()
         logger.info("Consumer closed")
 
@@ -125,23 +189,9 @@ class FinancialTransactionConsumer:
 def main():
     print("Financial Transaction Kafka Consumer")
     print("=" * 40)
-    try:
-        max_messages = input(
-            "Enter max transactions to consume (default: unlimited): "
-        ).strip()
-        max_messages = int(max_messages) if max_messages else None
-        timeout = input(
-            "Enter timeout in seconds (default: 60): "
-        ).strip()
-        timeout = int(timeout) if timeout else 60
-    except ValueError:
-        print("Using default values...")
-        max_messages = None
-        timeout = 60
     consumer = FinancialTransactionConsumer()
-    consumer.consume_transactions(
-        max_messages=max_messages, timeout_seconds=timeout
-    )
+    # Continuously consume messages with no max limit and no timeout
+    consumer.consume_transactions(max_messages=None, timeout_seconds=99999999)
 
 
 if __name__ == "__main__":
