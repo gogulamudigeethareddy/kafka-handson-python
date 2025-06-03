@@ -1,4 +1,105 @@
-# End-to-End Kafka Project with Python
+# Simple Kafka Project with Python
+
+This is a simplified Kafka project with one producer and one consumer for a single topic, orchestrated using Docker Compose.
+
+## Project Structure
+
+```
+kafka-project/
+├── docker-compose.yml      # Kafka cluster setup
+├── requirements.txt        # Python dependencies
+├── producer.py            # Simple Kafka producer
+├── consumer.py            # Simple Kafka consumer
+└── README.md             # This file
+```
+
+## Features
+
+### Kafka Cluster
+- **3 Kafka Brokers** for high availability
+- **Zookeeper** for cluster coordination  
+- **Kafka UI** for monitoring and management
+- **Automatic topic creation** enabled
+
+### Python Producer
+- **Simple Event Producer**: Generates user activity events (login, purchase, view_product, etc.)
+- **Key-based partitioning** using user_id
+- **Error handling and callbacks**
+- **Configurable event count and delay**
+
+### Python Consumer
+- **Simple Event Consumer**: Processes user events from single topic
+- **Real-time analytics** (event distribution, user activity)
+- **Consumer group** management
+- **Configurable message limits and timeout**
+
+## Prerequisites
+
+- Docker and Docker Compose
+- Python 3.7+
+- pip (Python package manager)
+
+## Setup Instructions
+
+### 1. Clone and Setup
+
+```bash
+# Create project directory
+mkdir kafka-project && cd kafka-project
+
+# Create Python virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install Python dependencies
+pip install -r requirements.txt
+```
+
+### 2. Start Kafka Cluster
+
+```bash
+# Start all services
+docker-compose up -d
+
+# Verify services are running
+docker-compose ps
+
+# Check logs if needed
+docker-compose logs kafka-broker-1
+```
+
+### 3. Access Kafka UI
+
+Open your browser and go to: `http://localhost:8080`
+
+The Kafka UI provides:
+- Topic management
+- Message browsing
+- Consumer group monitoring
+- Cluster health status
+
+## Usage Examples
+
+### Running the Producer
+
+```bash
+python producer.py
+```
+
+The producer will ask for:
+- Number of events to produce (default: 20)
+- Delay between events in seconds (default: 1)
+
+Example output:
+```
+Simple Kafka Producer
+==============================
+Enter number of events to produce (default 20): 10
+Enter delay between events in seconds (default 1): 0.5
+
+2025-06-02 10:30:15,123 - INFO - Producer initialized for topic: user-events
+2025-06-02 10:30:15,124 - INFO - Starting to produce 10 events to topic 'user-events'
+2025-06-02 # End-to-End Kafka Project with Python
 
 This project demonstrates a complete Kafka setup with Python producers and consumers, orchestrated using Docker Compose.
 
